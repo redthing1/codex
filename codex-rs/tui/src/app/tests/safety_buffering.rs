@@ -401,7 +401,7 @@ stream_max_retries = 0
         None
     );
 
-    insta::assert_snapshot!(app.chat_widget.composer_text_with_pending(), @"");
+    assert_eq!(app.chat_widget.composer_text_with_pending(), "");
     assert!(
         std::iter::from_fn(|| app_event_rx.try_recv().ok())
             .all(|event| !matches!(event, AppEvent::CodexOp(AppCommand::UserTurn { .. })))
@@ -967,6 +967,17 @@ goals = true
             app.chat_widget
                 .can_retry_safety_buffered_turn(&first_retry_turn_id)
         );
+        // Exercise explicit retry handling without the fork's suppressed automatic picker.
+        let (_, turn) = app.chat_widget.submitted_safety_buffering_turn_for_test();
+        app.chat_widget.confirm_safety_buffered_retry(
+            first_retry_thread_id,
+            first_retry_turn_id.clone(),
+            FASTER_MODEL.to_string(),
+            turn,
+            UserMessage::from(RETRY_PROMPT),
+        );
+        app.chat_widget
+            .handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         app.chat_widget
             .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let second_retry = loop {

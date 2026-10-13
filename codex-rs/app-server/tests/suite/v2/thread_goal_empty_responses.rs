@@ -176,3 +176,84 @@ command_windows = """Write-Output '{"continue":false}'"""
     server.verify().await;
     Ok(())
 }
+
+#[tokio::test]
+async fn goal_recovers_from_capacity_without_retry_advice_and_continues() -> Result<()> {
+    let server = create_mock_responses_server_sequence(vec![
+        responses::sse_failed("overloaded", "server_is_overloaded", "Try again."),
+        responses::sse(vec![
+            responses::ev_response_created("recovered"),
+            responses::ev_assistant_message("progress", "Continuing the work"),
+            responses::ev_completed("recovered"),
+        ]),
+        responses::sse(vec![
+            responses::ev_response_created("finish-goal"),
+            responses::ev_function_call("finish", "update_goal", r#"{"status":"complete"}"#),
+            responses::ev_completed("finish-goal"),
+        ]),
+        responses::sse(vec![
+            responses::ev_response_created("done"),
+            responses::ev_assistant_message("answer", "Finished"),
+            responses::ev_completed("done"),
+        ]),
+    ])
+    .await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri())
+        .with_model("gpt-5.4")
+        .enable_feature(Feature::Goals)
+        .write(codex_home.path())?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .without_managed_config()
+        .build_initialized()
+        .await?;
+    let request = mcp
+        .send_thread_start_request_with_auto_env(ThreadStartParams {
+            config: Some(
+                [(
+                    "model_providers.mock_provider.stream_max_retries".to_string(),
+                    json!(2),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            ..ThreadStartParams::default()
+        })
+        .await?;
+    let ThreadStartResponse { thread, .. } = mcp.read_response(request).await?;
+    let request = mcp
+        .send_raw_request(
+            "thread/goal/set",
+            Some(json!({"threadId": thread.id, "objective": "Finish the work"})),
+        )
+        .await?;
+    let _: ThreadGoalSetResponse = mcp.read_response(request).await?;
+    let completed: TurnCompletedNotification = timeout(
+        Duration::from_secs(30),
+        mcp.read_notification("turn/completed"),
+    )
+    .await??;
+    assert_eq!(completed.turn.status, TurnStatus::Completed);
+    assert_eq!(completed.turn.error, None);
+    timeout(Duration::from_secs(30), async {
+        loop {
+            let notification: ThreadGoalUpdatedNotification =
+                mcp.read_notification("thread/goal/updated").await?;
+            assert_ne!(notification.goal.status, ThreadGoalStatus::Blocked);
+            if notification.goal.status == ThreadGoalStatus::Complete {
+                return Ok::<_, anyhow::Error>(());
+            }
+        }
+    })
+    .await??;
+    let continued: TurnCompletedNotification = timeout(
+        Duration::from_secs(30),
+        mcp.read_notification("turn/completed"),
+    )
+    .await??;
+    assert_eq!(continued.turn.status, TurnStatus::Completed);
+    assert_eq!(continued.turn.error, None);
+    server.verify().await;
+    Ok(())
+}

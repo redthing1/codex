@@ -1,3 +1,15 @@
+**Linux fork**
+
+- Fixes: bounded capacity retries; buffering status without the popup.
+- Requires: Rust/rustup, Python 3.11+, and `sudo apt install build-essential pkg-config libcap-dev libssl-dev ripgrep` (Debian/Ubuntu).
+- Install: `git clone https://github.com/redthing1/codex.git && cd codex && ./scripts/fork.sh`.
+- Run: `codex`. Restart existing CLI sessions to use the fixes.
+- Sync upstream: `./scripts/fork.sh update` (fetch, rebase, rebuild, install).
+- Restore upstream: `./scripts/fork.sh uninstall`.
+- Uses the same login/config. Fork updates use the script; `./scripts/fork.sh --help` has details.
+
+---
+
 <p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
 <p align="center">
   <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />

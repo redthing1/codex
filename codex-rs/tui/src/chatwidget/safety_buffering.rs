@@ -5,6 +5,9 @@ use super::*;
 use crate::wrapping::word_wrap_lines;
 use codex_app_server_protocol::ModelSafetyBufferingUpdatedNotification;
 
+// The fork reports buffering in the status line without taking composer focus.
+const SHOW_SAFETY_BUFFERING_PROMPT: bool = false;
+
 const SAFETY_BUFFERING_PROMPT_VIEW_ID: &str = "safety-buffering-prompt";
 const SAFETY_BUFFERING_LEARN_MORE_URL: &str = "https://help.openai.com/en/articles/20001326";
 
@@ -39,6 +42,16 @@ struct ActiveSafetyBuffering {
 pub(super) struct SafetyBufferingState {
     submitted_turn: Option<(String, AppCommand)>,
     active: Option<ActiveSafetyBuffering>,
+}
+
+#[cfg(test)]
+impl ChatWidget {
+    pub(crate) fn submitted_safety_buffering_turn_for_test(&self) -> (String, AppCommand) {
+        self.safety_buffering
+            .submitted_turn
+            .clone()
+            .expect("submitted turn")
+    }
 }
 
 impl ChatWidget {
@@ -168,11 +181,7 @@ impl ChatWidget {
             agent_message_started: false,
         });
 
-        let status_details = if can_offer_retry {
-            format!("{SAFETY_BUFFERING_HEADER} {SAFETY_BUFFERING_MESSAGE_WITH_RETRY}")
-        } else {
-            SAFETY_BUFFERING_HEADER.to_string()
-        };
+        let status_details = SAFETY_BUFFERING_HEADER.to_string();
         self.bottom_pane.ensure_status_indicator();
         self.set_status(
             "Working".to_string(),
@@ -181,7 +190,7 @@ impl ChatWidget {
             /*details_max_lines*/ 6,
         );
 
-        if !should_show_prompt {
+        if !should_show_prompt || !SHOW_SAFETY_BUFFERING_PROMPT {
             return;
         }
         self.bottom_pane

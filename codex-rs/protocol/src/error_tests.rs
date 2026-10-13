@@ -39,7 +39,7 @@ async fn codex_err_debug_preserves_legacy_shape() {
 #[test]
 fn retryability_preserves_error_details_distinctions() {
     let errors = [
-        (CodexErr::ServerOverloaded, false),
+        (CodexErr::ServerOverloaded, true),
         (CodexErr::new(CodexErrorDetails::ContentFilter), true),
         (
             CodexErr::new(CodexErrorDetails::RateLimitExceeded("retry later".into())),
@@ -85,7 +85,7 @@ fn retryability_preserves_error_details_distinctions() {
 /// make a terminal error retryable.
 #[test]
 fn retry_delay_distinguishes_server_advice_backoff_and_terminal_errors() {
-    let error = CodexErr::InternalServerError;
+    let error = CodexErr::ServerOverloaded;
     for (retry_count, expected_millis) in [(1, 180..220), (3, 720..880)] {
         let delay = error.retry_delay(retry_count).expect("retryable error");
         assert!(expected_millis.contains(&delay.as_millis()));

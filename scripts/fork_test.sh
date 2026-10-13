@@ -87,3 +87,18 @@ fi
 "$CODEX_FORK_HOME/fork.sh" uninstall >/dev/null
 [[ "$(readlink "$CODEX_FORK_BIN")" = upstream ]]
 echo "Fork install/reinstall/update/uninstall tests passed."
+
+# Packaging must refuse stale binaries or an uncommitted checkout before touching them.
+mkdir -p "$tmp/repo/scripts" "$CARGO_TARGET_DIR/fork-release"
+cp "$repo/scripts/fork-release.sh" "$tmp/repo/scripts/"
+git -C "$tmp/repo" init -q
+git -C "$tmp/repo" add .
+git -C "$tmp/repo" -c user.name=Test -c user.email=test@example.invalid commit -qm fixture
+echo stale > "$CARGO_TARGET_DIR/fork-release/build-revision"
+if "$tmp/repo/scripts/fork-release.sh" package > "$tmp/error" 2>&1; then exit 1; fi
+rg -q 'Release binaries do not match' "$tmp/error"
+git -C "$tmp/repo" rev-parse HEAD > "$CARGO_TARGET_DIR/fork-release/build-revision"
+touch "$tmp/repo/uncommitted"
+if "$tmp/repo/scripts/fork-release.sh" package > "$tmp/error" 2>&1; then exit 1; fi
+rg -q 'Release binaries do not match' "$tmp/error"
+echo "Release revision guards passed."

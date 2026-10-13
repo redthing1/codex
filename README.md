@@ -3,9 +3,9 @@
 - Fixes: bounded capacity retries; buffering status without the popup.
 - Install: `curl -fsSL https://github.com/redthing1/codex/releases/latest/download/fork.sh | bash`.
 - Static x86-64 Linux bundle. No Rust, system library dependencies, or checkout needed.
-- Run: `codex`. Restart existing CLI sessions to use the fixes.
+- Run: `codex`. Check launcher/build: `~/.local/share/codex-fork/fork.sh status`. Restart existing sessions after updating.
 - Update/restore: `~/.local/share/codex-fork/fork.sh update` / `uninstall`.
-- Maintainer: `./scripts/fork.sh sync`, push rebased `main`, then `./scripts/fork-release.sh` to build and publish.
+- Maintainer: `./scripts/fork.sh sync`, `git push --force-with-lease origin main`, then `./scripts/fork-release.sh` to build and publish.
 
 ---
 

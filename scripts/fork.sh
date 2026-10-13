@@ -39,6 +39,8 @@ build() {
         python3 - <<'PY'
 import hashlib
 import os
+from pathlib import Path
+import re
 import subprocess
 from codex_package.targets import TARGET_SPECS
 from codex_package.v8 import resolve_codex_v8_cargo_env
@@ -56,10 +58,32 @@ target_dir = target if "CODEX_FORK_TARGET" in os.environ else ""
 if target_dir:
     cmd += ["--target", target]
 print(f"Building {target} with {jobs} Cargo jobs", flush=True)
-subprocess.run(cmd + ["--bin", "bwrap"], env=env, check=True)
-env["CODEX_BWRAP_SHA256"] = hashlib.sha256(open(
-    os.path.join(env["CARGO_TARGET_DIR"], target_dir, "release", "bwrap"), "rb").read()).hexdigest()
-subprocess.run(cmd + ["--bin", "codex", "--bin", "codex-code-mode-host"], env=env, check=True)
+# Main uses 0.0.0, which the backend treats as a legacy client. Match the
+# official release version at build time, without a permanent workspace diff.
+version = os.environ.get("CODEX_FORK_VERSION")
+if not version:
+    url = subprocess.check_output(["curl", "-fsSL", "--retry", "3", "-o", "/dev/null",
+        "-w", "%{url_effective}", "https://github.com/openai/codex/releases/latest"], text=True)
+    version = url.rsplit("/rust-v", 1)[-1]
+if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+    raise SystemExit(f"Invalid upstream release version: {version}")
+manifest, lock = Path("Cargo.toml"), Path("Cargo.lock")
+original_manifest, original_lock = manifest.read_bytes(), lock.read_bytes()
+try:
+    text, count = re.subn(r'(\[workspace\.package\]\s*version = ")[^"]+"',
+        lambda m: m[1] + version + '"', original_manifest.decode(), count=1)
+    if count != 1:
+        raise SystemExit("Cannot locate upstream workspace version")
+    manifest.write_text(text)
+    subprocess.run(["cargo", "update", "--workspace", "--offline"], env=env, check=True)
+    print(f"Upstream compatibility version: {version}", flush=True)
+    subprocess.run(cmd + ["--bin", "bwrap"], env=env, check=True)
+    env["CODEX_BWRAP_SHA256"] = hashlib.sha256(open(
+        os.path.join(env["CARGO_TARGET_DIR"], target_dir, "release", "bwrap"), "rb").read()).hexdigest()
+    subprocess.run(cmd + ["--bin", "codex", "--bin", "codex-code-mode-host"], env=env, check=True)
+finally:
+    manifest.write_bytes(original_manifest)
+    lock.write_bytes(original_lock)
 PY
     )
 }
@@ -82,7 +106,8 @@ install_fork() {
         install -m 755 "$CARGO_TARGET_DIR/release/bwrap" "$staging/codex-resources/bwrap"
         install -m 755 "$(command -v rg)" "$staging/codex-path/rg"
         # Discover helpers using upstream's package layout; source builds skip its updater.
-        echo '{"layoutVersion":1,"version":"0.0.0","entrypoint":"bin/codex"}' > "$staging/codex-package.json"
+        printf '{"layoutVersion":1,"version":"%s","entrypoint":"bin/codex"}\n' \
+            "$("$staging/bin/codex" --version | awk '{print $2}')" > "$staging/codex-package.json"
         git -C "$repo" rev-parse HEAD > "$staging/revision"
         install -m 755 "$script" "$staging/fork.sh"
     fi

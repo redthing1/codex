@@ -9,6 +9,10 @@ output="$CARGO_TARGET_DIR/fork-release"
 mkdir -p "$tools" "$output"
 
 build_static() {
+    local revision
+    revision=$(git -C "$repo" rev-parse HEAD)
+    [[ -z "$(git -C "$repo" status --porcelain)" ]] || { echo "Commit changes before building a release." >&2; exit 1; }
+    rm -f "$output/build-revision"
     [[ "$TARGET" = x86_64-unknown-linux-musl ]] || { echo "Release builder currently supports x86-64 Linux." >&2; exit 1; }
     if [[ ! -x "$tools/zig/zig" ]]; then
         curl -fL --retry 3 https://ziglang.org/download/0.14.0/zig-linux-x86_64-0.14.0.tar.xz -o "$tools/zig.tar.xz"
@@ -51,10 +55,22 @@ PY
     export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=64
     (cd "$repo/codex-rs" && rustup target add "$TARGET")
     CODEX_FORK_TARGET="$TARGET" "$repo/scripts/fork.sh" build
+    [[ -z "$(git -C "$repo" status --porcelain)" && "$(git -C "$repo" rev-parse HEAD)" = "$revision" ]] || {
+        echo "Checkout changed during the build; rebuild before packaging." >&2; exit 1;
+    }
+    printf '%s\n' "$revision" > "$output/build-revision"
 }
 
 package_static() {
-    local binary
+    [[ -z "$(git -C "$repo" status --porcelain)" && -f "$output/build-revision" \
+        && "$(cat "$output/build-revision")" = "$(git -C "$repo" rev-parse HEAD)" ]] || {
+        echo "Release binaries do not match this clean checkout; run scripts/fork-release.sh build first." >&2; exit 1;
+    }
+    local binary version
+    version=$("$CARGO_TARGET_DIR/$TARGET/release/codex" --version | awk '{print $2}')
+    [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$version" != 0.0.0 ]] || {
+        echo "Release has no upstream compatibility version; rebuild before packaging." >&2; exit 1;
+    }
     for binary in codex codex-code-mode-host bwrap; do
         if readelf -l "$CARGO_TARGET_DIR/$TARGET/release/$binary" | rg -q INTERP \
             || readelf -d "$CARGO_TARGET_DIR/$TARGET/release/$binary" | rg -q NEEDED; then
@@ -66,6 +82,7 @@ package_static() {
     done
     CODEX_REPO_ROOT="$repo" python3 "$repo/scripts/build_codex_package.py" \
         --target "$TARGET" --package-dir "$output/package" --force --strip none \
+        --package-version "$version" \
         --entrypoint-bin "$CARGO_TARGET_DIR/$TARGET/release/codex" \
         --code-mode-host-bin "$CARGO_TARGET_DIR/$TARGET/release/codex-code-mode-host" \
         --bwrap-bin "$CARGO_TARGET_DIR/$TARGET/release/bwrap"

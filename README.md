@@ -5,7 +5,7 @@
 - Static x86-64 Linux bundle. No Rust, system library dependencies, or checkout needed.
 - Run: `codex`. Check launcher/build: `~/.local/share/codex-fork/fork.sh status`. Restart existing sessions after updating.
 - Update/restore: `~/.local/share/codex-fork/fork.sh update` / `uninstall`.
-- Maintainer: `./scripts/fork.sh sync`, `git push --force-with-lease origin main`, then `./scripts/fork-release.sh` to build and publish.
+- Maintainer: see [FORK.md](FORK.md) for upstream sync and release commands.
 
 ---
 

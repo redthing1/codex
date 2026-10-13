@@ -1,12 +1,11 @@
 **Linux fork**
 
 - Fixes: bounded capacity retries; buffering status without the popup.
-- Requires: Rust/rustup, Python 3.11+, and `sudo apt install build-essential pkg-config libcap-dev libssl-dev ripgrep` (Debian/Ubuntu).
-- Install: `git clone https://github.com/redthing1/codex.git && cd codex && ./scripts/fork.sh`.
+- Install: `curl -fsSL https://github.com/redthing1/codex/releases/latest/download/fork.sh | bash`.
+- Static x86-64 Linux bundle. No Rust, system library dependencies, or checkout needed.
 - Run: `codex`. Restart existing CLI sessions to use the fixes.
-- Sync upstream: `./scripts/fork.sh update` (fetch, rebase, rebuild, install).
-- Restore upstream: `./scripts/fork.sh uninstall`.
-- Uses the same login/config. Fork updates use the script; `./scripts/fork.sh --help` has details.
+- Update/restore: `~/.local/share/codex-fork/fork.sh update` / `uninstall`.
+- Maintainer: `./scripts/fork.sh sync`, push rebased `main`, then `./scripts/fork-release.sh` to build and publish.
 
 ---
 

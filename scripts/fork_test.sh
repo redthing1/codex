@@ -47,4 +47,43 @@ rm "$CODEX_FORK_BIN"
 "$repo/scripts/fork.sh" install-built >/dev/null
 "$repo/scripts/fork.sh" uninstall >/dev/null
 [[ ! -e "$CODEX_FORK_BIN" && ! -L "$CODEX_FORK_BIN" ]]
+
+# Download installation also works from stdin, without a checkout or compiler.
+export FORK_TEST_FIXTURES="$tmp/fixtures"
+mkdir -p "$FORK_TEST_FIXTURES/package/bin" "$FORK_TEST_FIXTURES/package/codex-resources" "$FORK_TEST_FIXTURES/package/codex-path"
+cp "$tmp/target/release/codex" "$tmp/target/release/codex-code-mode-host" "$FORK_TEST_FIXTURES/package/bin/"
+cp "$tmp/target/release/bwrap" "$FORK_TEST_FIXTURES/package/codex-resources/"
+cp "$repo/scripts/fork.sh" "$FORK_TEST_FIXTURES/package/fork.sh"
+echo prebuilt-test > "$FORK_TEST_FIXTURES/package/revision"
+asset=codex-fork-x86_64-unknown-linux-musl.tar.gz
+tar -C "$FORK_TEST_FIXTURES/package" -czf "$FORK_TEST_FIXTURES/$asset" .
+(cd "$FORK_TEST_FIXTURES" && sha256sum "$asset" > "$asset.sha256")
+cat > "$tmp/bin/curl" <<'CURL'
+#!/usr/bin/env bash
+set -euo pipefail
+while (($#)); do
+    case "$1" in
+        -o) destination=$2; shift 2 ;;
+        https://*) url=$1; shift ;;
+        *) shift ;;
+    esac
+done
+if [[ "$url" = */releases/latest ]]; then
+    echo https://github.com/redthing1/codex/releases/tag/fork-test
+else
+    cp "$FORK_TEST_FIXTURES/${url##*/}" "$destination"
+fi
+CURL
+chmod +x "$tmp/bin/curl"
+ln -s upstream "$CODEX_FORK_BIN"
+bash < "$repo/scripts/fork.sh" >/dev/null
+[[ "$(cat "$CODEX_FORK_HOME/current/revision")" = prebuilt-test ]]
+before=$(readlink "$CODEX_FORK_HOME/current")
+printf '%064d  %s\n' 0 "$asset" > "$FORK_TEST_FIXTURES/$asset.sha256"
+if "$repo/scripts/fork.sh" update >/dev/null 2>&1; then
+    echo "Bad checksum was accepted" >&2; exit 1
+fi
+[[ "$(readlink "$CODEX_FORK_HOME/current")" = "$before" ]]
+"$CODEX_FORK_HOME/fork.sh" uninstall >/dev/null
+[[ "$(readlink "$CODEX_FORK_BIN")" = upstream ]]
 echo "Fork install/reinstall/update/uninstall tests passed."

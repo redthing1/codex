@@ -2,31 +2,28 @@
 # Build/install the local fork without modifying the upstream package itself.
 set -euo pipefail
 
-repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+script=${BASH_SOURCE[0]:-}
+repo=$(cd -- "$(dirname -- "${script:-.}")/.." && pwd)
 state=${CODEX_FORK_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/codex-fork}
 [[ "$state" = /* ]] || { echo "CODEX_FORK_HOME must be absolute." >&2; exit 1; }
-export CARGO_TARGET_DIR
-CARGO_TARGET_DIR=$(realpath -m -- "${CARGO_TARGET_DIR:-$repo/codex-rs/target}")
+export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$repo/codex-rs/target}
 
 usage() {
     cat <<'HELP'
-Usage: scripts/fork.sh [install|update|build|install-built|uninstall|status]
+Usage: fork.sh [install|update|uninstall|status|build|install-built|source-install|sync]
 
-Default: build and replace the current codex launcher; preserve upstream for uninstall.
-Requires Rust/rustup, Python 3.11+, ripgrep, a C compiler, pkg-config, libcap, OpenSSL.
-Debian/Ubuntu: sudo apt install build-essential pkg-config libcap-dev libssl-dev ripgrep
-First build is substantial; later builds reuse Cargo's cache.
+Default/update: download the static Linux release, verify checksum, install.
+Requires bash, curl, tar, and coreutils. No compiler or checkout needed.
+uninstall: restore the previous upstream launcher. status: show installed revision.
 
-update: clean checkout required; fetch/rebase upstream/main, rebuild, reinstall.
-Conflicts stop the update. Resolve and `git rebase --continue`, then run install.
-Push your rebased fork separately with git push --force-with-lease.
-uninstall: restore upstream's launcher/updater; keep build caches for reinstalls.
-install-built: reinstall existing build without compiling.
+Developers: source-install builds and installs; install-built uses an existing build.
+sync: clean checkout required; fetch/rebase upstream/main. Resolve conflicts normally.
+Then scripts/fork-release.sh builds and publishes using gh. Push rebased main separately.
 
 Uses the same login/config, disables upstream auto-update, and runs its own backend.
-If npm/bun replaces the launcher, rerun install-built. Without an existing codex,
+If npm/bun replaces the launcher, rerun this installer. Without an existing codex,
 add ~/.local/bin to PATH. Existing launcher directory must be writable.
-Overrides: CODEX_FORK_BIN, CODEX_FORK_HOME, CARGO_TARGET_DIR, CARGO_BUILD_JOBS (8).
+Overrides: CODEX_FORK_BIN, CODEX_FORK_HOME, CARGO_TARGET_DIR, CARGO_BUILD_JOBS (auto).
 HELP
 }
 
@@ -39,10 +36,10 @@ build() {
     }
     # Avoid release LTO/debug-symbol costs; retain optimized runtime performance.
     (cd "$repo/codex-rs" && CODEX_REPO_ROOT="$repo" PYTHONPATH="$repo/scripts" \
-        python3 - "${CARGO_BUILD_JOBS:-8}" <<'PY'
+        python3 - <<'PY'
+import hashlib
 import os
 import subprocess
-import sys
 from codex_package.targets import TARGET_SPECS
 from codex_package.v8 import resolve_codex_v8_cargo_env
 
@@ -50,16 +47,25 @@ host = next(line.split(": ", 1)[1] for line in subprocess.check_output(
     ["rustc", "-vV"], text=True).splitlines() if line.startswith("host: "))
 env = dict(os.environ, CARGO_PROFILE_RELEASE_LTO="false", CARGO_PROFILE_RELEASE_DEBUG="0",
            CARGO_PROFILE_RELEASE_STRIP="symbols")
-env.update(resolve_codex_v8_cargo_env(TARGET_SPECS[host]))
-subprocess.run(["cargo", "build", "--locked", "--release", "--jobs", sys.argv[1],
-                "--bin", "codex", "--bin", "codex-code-mode-host", "--bin", "bwrap"],
-               env=env, check=True)
+target = os.environ.get("CODEX_FORK_TARGET", host)
+env.update(resolve_codex_v8_cargo_env(TARGET_SPECS[target]))
+available_kib = int(next(line.split()[1] for line in open("/proc/meminfo") if line.startswith("MemAvailable:")))
+jobs = os.environ.get("CARGO_BUILD_JOBS", str(max(1, min(os.cpu_count() or 1, available_kib // (4 * 1024 * 1024)))))
+cmd = ["cargo", "build", "--locked", "--release", "--jobs", jobs]
+target_dir = target if "CODEX_FORK_TARGET" in os.environ else ""
+if target_dir:
+    cmd += ["--target", target]
+print(f"Building {target} with {jobs} Cargo jobs", flush=True)
+subprocess.run(cmd + ["--bin", "bwrap"], env=env, check=True)
+env["CODEX_BWRAP_SHA256"] = hashlib.sha256(open(
+    os.path.join(env["CARGO_TARGET_DIR"], target_dir, "release", "bwrap"), "rb").read()).hexdigest()
+subprocess.run(cmd + ["--bin", "codex", "--bin", "codex-code-mode-host"], env=env, check=True)
 PY
     )
 }
 
 install_fork() {
-    local launcher staging
+    local launcher staging=${1:-}
     if [[ -f "$state/launcher-path" ]]; then
         launcher=$(cat "$state/launcher-path")
     else
@@ -69,17 +75,21 @@ install_fork() {
     [[ "$launcher" = /* ]] || { echo "Launcher must be an absolute path: $launcher" >&2; exit 1; }
     mkdir -p -- "$(dirname -- "$launcher")" "$state/releases"
     [[ -w "$(dirname -- "$launcher")" ]] || { echo "Launcher directory is not writable: $launcher" >&2; exit 1; }
-    staging=$(mktemp -d "$state/releases/build.XXXXXXXX")
-    mkdir -p "$staging/bin" "$staging/codex-resources" "$staging/codex-path"
-    install -m 755 "$CARGO_TARGET_DIR/release/codex" "$CARGO_TARGET_DIR/release/codex-code-mode-host" "$staging/bin/"
-    install -m 755 "$CARGO_TARGET_DIR/release/bwrap" "$staging/codex-resources/bwrap"
-    install -m 755 "$(command -v rg)" "$staging/codex-path/rg"
-    # Discover helpers using upstream's package layout; source builds skip its updater.
-    echo '{"layoutVersion":1,"version":"0.0.0","entrypoint":"bin/codex"}' > "$staging/codex-package.json"
-    git -C "$repo" rev-parse HEAD > "$staging/revision"
+    if [[ -z "$staging" ]]; then
+        staging=$(mktemp -d "$state/releases/build.XXXXXXXX")
+        mkdir -p "$staging/bin" "$staging/codex-resources" "$staging/codex-path"
+        install -m 755 "$CARGO_TARGET_DIR/release/codex" "$CARGO_TARGET_DIR/release/codex-code-mode-host" "$staging/bin/"
+        install -m 755 "$CARGO_TARGET_DIR/release/bwrap" "$staging/codex-resources/bwrap"
+        install -m 755 "$(command -v rg)" "$staging/codex-path/rg"
+        # Discover helpers using upstream's package layout; source builds skip its updater.
+        echo '{"layoutVersion":1,"version":"0.0.0","entrypoint":"bin/codex"}' > "$staging/codex-package.json"
+        git -C "$repo" rev-parse HEAD > "$staging/revision"
+        install -m 755 "$script" "$staging/fork.sh"
+    fi
     "$staging/bin/codex" --version
     ln -s "$staging" "$state/current.new"
     mv -Tf "$state/current.new" "$state/current"
+    install -m 755 "$staging/fork.sh" "$state/fork.sh"
     cat > "$state/launch.new" <<'LAUNCH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -101,14 +111,36 @@ LAUNCH
     fi
     printf '%s\n' "$launcher" > "$state/launcher-path"
     echo "Installed fork at $launcher"
-    echo "Restore upstream: $repo/scripts/fork.sh uninstall"
+    echo "Update/restore: $state/fork.sh update / uninstall"
+}
+
+download_fork() {
+    local architecture latest tag asset downloads staging
+    architecture=$(uname -m)
+    [[ "$architecture" = x86_64 && "$(uname -s)" = Linux ]] || {
+        echo "Prebuilt releases currently support x86-64 Linux." >&2; exit 1;
+    }
+    latest=$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/redthing1/codex/releases/latest)
+    tag=${latest##*/}
+    [[ "$tag" = fork-* ]] || { echo "No fork release is published yet." >&2; exit 1; }
+    asset="codex-fork-x86_64-unknown-linux-musl.tar.gz"
+    downloads=$(mktemp -d)
+    curl -fL --retry 3 "https://github.com/redthing1/codex/releases/download/$tag/$asset" -o "$downloads/$asset"
+    curl -fsSL --retry 3 "https://github.com/redthing1/codex/releases/download/$tag/$asset.sha256" -o "$downloads/$asset.sha256"
+    (cd "$downloads" && sha256sum -c "$asset.sha256")
+    mkdir -p "$state/releases"
+    staging=$(mktemp -d "$state/releases/release.XXXXXXXX")
+    tar -xzf "$downloads/$asset" -C "$staging"
+    install_fork "$staging"
+    rm -rf -- "$downloads"
 }
 
 case "${1:-install}" in
     build) build ;;
-    install) build; install_fork ;;
+    install|update) download_fork ;;
+    source-install) build; install_fork ;;
     install-built) install_fork ;;
-    update)
+    sync)
         [[ -z "$(git -C "$repo" status --porcelain)" ]] || {
             echo "Commit or stash local changes before updating." >&2; exit 1;
         }
@@ -117,8 +149,6 @@ case "${1:-install}" in
         fi
         git -C "$repo" fetch upstream main
         git -C "$repo" rebase upstream/main
-        build
-        install_fork
         ;;
     uninstall)
         if [[ ! -f "$state/launcher-path" ]]; then echo "Fork is not installed."; exit 0; fi
